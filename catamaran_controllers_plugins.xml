@@ -1,0 +1,15 @@
+<library path="catamaran_controllers">
+  <class
+    name="catamaran_controllers/BodyForceController"
+    type="catamaran_controllers::BodyForceController"
+    base_class_type="controller_interface::ChainableControllerInterface">
+    <description>Body force controller</description>
+  </class>
+
+  <class
+    name="catamaran_controllers/BodyVelocityController"
+    type="catamaran_controllers::BodyVelocityController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>Body velocity controller</description>
+  </class>
+</library>

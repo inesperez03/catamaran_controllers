@@ -1,0 +1,256 @@
+#include "catamaran_controllers/body_velocity_controller.hpp"
+
+#include <algorithm>
+#include <string>
+#include <vector>
+
+#include "pluginlib/class_list_macros.hpp"
+
+namespace catamaran_controllers
+{
+
+controller_interface::CallbackReturn BodyVelocityController::on_init()
+{
+  try {
+    auto_declare<std::string>("cmd_vel_topic", "/cmd_vel");
+    auto_declare<std::string>("navigator_topic", "/navigator_msg");
+    auto_declare<std::string>("body_force_controller_name", "body_force_controller");
+
+    auto_declare<double>("kp_u", 0.0);
+    auto_declare<double>("ki_u", 0.0);
+    auto_declare<double>("kd_u", 0.0);
+
+    auto_declare<double>("kp_r", 0.0);
+    auto_declare<double>("ki_r", 0.0);
+    auto_declare<double>("kd_r", 0.0);
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(get_node()->get_logger(), "Exception in on_init: %s", e.what());
+    return controller_interface::CallbackReturn::ERROR;
+  }
+
+  return controller_interface::CallbackReturn::SUCCESS;
+}
+
+controller_interface::InterfaceConfiguration
+BodyVelocityController::command_interface_configuration() const
+{
+  const std::string prefix = body_force_controller_name_;
+
+  return {
+    controller_interface::interface_configuration_type::INDIVIDUAL,
+    {
+      prefix + "/force.x",
+      prefix + "/force.y",
+      prefix + "/force.z",
+      prefix + "/torque.x",
+      prefix + "/torque.y",
+      prefix + "/torque.z"
+    }
+  };
+}
+
+controller_interface::InterfaceConfiguration
+BodyVelocityController::state_interface_configuration() const
+{
+  return {
+    controller_interface::interface_configuration_type::NONE
+  };
+}
+
+controller_interface::CallbackReturn BodyVelocityController::on_configure(
+  const rclcpp_lifecycle::State &)
+{
+  cmd_vel_topic_ = get_node()->get_parameter("cmd_vel_topic").as_string();
+  navigator_topic_ = get_node()->get_parameter("navigator_topic").as_string();
+  body_force_controller_name_ =
+    get_node()->get_parameter("body_force_controller_name").as_string();
+
+  kp_u_ = get_node()->get_parameter("kp_u").as_double();
+  ki_u_ = get_node()->get_parameter("ki_u").as_double();
+  kd_u_ = get_node()->get_parameter("kd_u").as_double();
+
+  kp_r_ = get_node()->get_parameter("kp_r").as_double();
+  ki_r_ = get_node()->get_parameter("ki_r").as_double();
+  kd_r_ = get_node()->get_parameter("kd_r").as_double();
+
+  cmd_vel_sub_ = get_node()->create_subscription<TwistMsg>(
+    cmd_vel_topic_,
+    rclcpp::SystemDefaultsQoS(),
+    [this](const TwistMsg::SharedPtr msg)
+    {
+      cmd_vel_buffer_.writeFromNonRT(msg);
+    });
+
+  navigator_sub_ = get_node()->create_subscription<NavigatorMsg>(
+    navigator_topic_,
+    rclcpp::SystemDefaultsQoS(),
+    [this](const NavigatorMsg::SharedPtr msg)
+    {
+      navigator_buffer_.writeFromNonRT(msg);
+    });
+
+  param_callback_handle_ = get_node()->add_on_set_parameters_callback(
+    std::bind(&BodyVelocityController::parametersCallback, this, std::placeholders::_1));
+
+  RCLCPP_INFO(get_node()->get_logger(), "Configured BodyVelocityController");
+  RCLCPP_INFO(get_node()->get_logger(), "cmd_vel topic: %s", cmd_vel_topic_.c_str());
+  RCLCPP_INFO(get_node()->get_logger(), "navigator topic: %s", navigator_topic_.c_str());
+  RCLCPP_INFO(
+    get_node()->get_logger(),
+    "body_force_controller_name: %s",
+    body_force_controller_name_.c_str());
+  RCLCPP_INFO(
+    get_node()->get_logger(),
+    "Initial gains: kp_u=%.3f ki_u=%.3f kd_u=%.3f | kp_r=%.3f ki_r=%.3f kd_r=%.3f",
+    kp_u_, ki_u_, kd_u_, kp_r_, ki_r_, kd_r_);
+
+  return controller_interface::CallbackReturn::SUCCESS;
+}
+
+controller_interface::CallbackReturn BodyVelocityController::on_activate(
+  const rclcpp_lifecycle::State &)
+{
+  integral_u_ = 0.0;
+  integral_r_ = 0.0;
+  prev_error_u_ = 0.0;
+  prev_error_r_ = 0.0;
+  first_update_ = true;
+
+  for (auto & command_interface : command_interfaces_) {
+    command_interface.set_value(0.0);
+  }
+
+  return controller_interface::CallbackReturn::SUCCESS;
+}
+
+controller_interface::CallbackReturn BodyVelocityController::on_deactivate(
+  const rclcpp_lifecycle::State &)
+{
+  integral_u_ = 0.0;
+  integral_r_ = 0.0;
+  prev_error_u_ = 0.0;
+  prev_error_r_ = 0.0;
+  first_update_ = true;
+
+  for (auto & command_interface : command_interfaces_) {
+    command_interface.set_value(0.0);
+  }
+
+  return controller_interface::CallbackReturn::SUCCESS;
+}
+
+rcl_interfaces::msg::SetParametersResult BodyVelocityController::parametersCallback(
+  const std::vector<rclcpp::Parameter> & params)
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+  result.reason = "success";
+
+  for (const auto & param : params) {
+    const auto & name = param.get_name();
+
+    if (name == "kp_u") {
+      kp_u_ = param.as_double();
+    } else if (name == "ki_u") {
+      ki_u_ = param.as_double();
+      integral_u_ = 0.0;
+    } else if (name == "kd_u") {
+      kd_u_ = param.as_double();
+    } else if (name == "kp_r") {
+      kp_r_ = param.as_double();
+    } else if (name == "ki_r") {
+      ki_r_ = param.as_double();
+      integral_r_ = 0.0;
+    } else if (name == "kd_r") {
+      kd_r_ = param.as_double();
+    }
+  }
+
+  RCLCPP_INFO(
+    get_node()->get_logger(),
+    "Updated gains: kp_u=%.3f ki_u=%.3f kd_u=%.3f | kp_r=%.3f ki_r=%.3f kd_r=%.3f",
+    kp_u_, ki_u_, kd_u_, kp_r_, ki_r_, kd_r_);
+
+  return result;
+}
+
+controller_interface::return_type BodyVelocityController::update(
+  const rclcpp::Time &,
+  const rclcpp::Duration & period)
+{
+  auto cmd_vel_msg = cmd_vel_buffer_.readFromRT();
+  auto navigator_msg = navigator_buffer_.readFromRT();
+
+  if (!cmd_vel_msg || !(*cmd_vel_msg) || !navigator_msg || !(*navigator_msg)) {
+    return controller_interface::return_type::OK;
+  }
+
+  const double u_ref = (*cmd_vel_msg)->linear.x;
+  const double r_ref = (*cmd_vel_msg)->angular.z;
+
+  const double u_meas = (*navigator_msg)->body_velocity.linear.x;
+  const double r_meas = (*navigator_msg)->body_velocity.angular.z;
+
+  const double error_u = u_ref - u_meas;
+  const double error_r = r_ref - r_meas;
+
+  const double dt = period.seconds();
+
+  integral_u_ += error_u * dt;
+  integral_r_ += error_r * dt;
+
+  double derivative_u = 0.0;
+  double derivative_r = 0.0;
+
+  if (!first_update_ && dt > 0.0) {
+    derivative_u = (error_u - prev_error_u_) / dt;
+    derivative_r = (error_r - prev_error_r_) / dt;
+  }
+
+  prev_error_u_ = error_u;
+  prev_error_r_ = error_r;
+  first_update_ = false;
+
+  const double force_x =
+    kp_u_ * error_u +
+    ki_u_ * integral_u_ +
+    kd_u_ * derivative_u;
+
+  const double torque_z =
+    kp_r_ * error_r +
+    ki_r_ * integral_r_ +
+    kd_r_ * derivative_r;
+
+  if (command_interfaces_.size() != 6) {
+    RCLCPP_ERROR_THROTTLE(
+      get_node()->get_logger(),
+      *get_node()->get_clock(),
+      2000,
+      "Expected 6 command interfaces, got %zu",
+      command_interfaces_.size());
+    return controller_interface::return_type::ERROR;
+  }
+
+  command_interfaces_[0].set_value(force_x);
+  command_interfaces_[1].set_value(0.0);
+  command_interfaces_[2].set_value(0.0);
+  command_interfaces_[3].set_value(0.0);
+  command_interfaces_[4].set_value(0.0);
+  command_interfaces_[5].set_value(torque_z);
+
+  RCLCPP_INFO_THROTTLE(
+    get_node()->get_logger(),
+    *get_node()->get_clock(),
+    1000,
+    "u_ref=%.3f u=%.3f Fx=%.3f | r_ref=%.3f r=%.3f Mz=%.3f",
+    u_ref, u_meas, force_x,
+    r_ref, r_meas, torque_z);
+
+  return controller_interface::return_type::OK;
+}
+
+}  // namespace catamaran_controllers
+
+PLUGINLIB_EXPORT_CLASS(
+  catamaran_controllers::BodyVelocityController,
+  controller_interface::ControllerInterface)
