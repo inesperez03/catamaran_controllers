@@ -17,6 +17,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(urdf REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(sura_msgs REQUIRED)
+find_package(TinyXML2 REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
   src/body_force_controller.cpp
@@ -30,6 +31,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 
 target_link_libraries(${PROJECT_NAME}
   Eigen3::Eigen
+  tinyxml2::tinyxml2
 )
 
 ament_target_dependencies(${PROJECT_NAME}

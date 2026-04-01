@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <stdexcept>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -27,6 +28,86 @@ Eigen::Isometry3d BodyForceController::urdfPoseToEigen(const urdf::Pose & pose)
     pose.position.z);
 
   return T;
+}
+
+std::vector<std::string> BodyForceController::extractThrusterJointsFromRos2Control(
+  const std::string & robot_description) const
+{
+  tinyxml2::XMLDocument doc;
+  if (doc.Parse(robot_description.c_str()) != tinyxml2::XML_SUCCESS) {
+    throw std::runtime_error("Failed to parse robot_description XML");
+  }
+
+  const tinyxml2::XMLElement * robot = doc.FirstChildElement("robot");
+  if (!robot) {
+    throw std::runtime_error("robot_description does not contain a <robot> element");
+  }
+
+  std::vector<std::string> joint_names;
+
+  for (
+    const tinyxml2::XMLElement * ros2_control = robot->FirstChildElement("ros2_control");
+    ros2_control != nullptr;
+    ros2_control = ros2_control->NextSiblingElement("ros2_control"))
+  {
+    for (
+      const tinyxml2::XMLElement * joint = ros2_control->FirstChildElement("joint");
+      joint != nullptr;
+      joint = joint->NextSiblingElement("joint"))
+    {
+      const char * joint_name = joint->Attribute("name");
+      if (joint_name == nullptr) {
+        continue;
+      }
+
+      bool has_effort_command_interface = false;
+      for (
+        const tinyxml2::XMLElement * command_interface = joint->FirstChildElement("command_interface");
+        command_interface != nullptr;
+        command_interface = command_interface->NextSiblingElement("command_interface"))
+      {
+        const char * interface_name = command_interface->Attribute("name");
+        if (interface_name != nullptr && std::string(interface_name) == "effort") {
+          has_effort_command_interface = true;
+          break;
+        }
+      }
+
+      if (has_effort_command_interface) {
+        joint_names.emplace_back(joint_name);
+      }
+    }
+  }
+
+  if (joint_names.empty()) {
+    throw std::runtime_error("No effort command joints found under <ros2_control>");
+  }
+
+  return joint_names;
+}
+
+std::string BodyForceController::resolveBaseLink(
+  const urdf::Model & model,
+  const std::string & configured_base_link) const
+{
+  if (!configured_base_link.empty() && model.getLink(configured_base_link)) {
+    return configured_base_link;
+  }
+
+  const auto root_link = model.getRoot();
+  if (!root_link) {
+    throw std::runtime_error("Failed to resolve the robot root link");
+  }
+
+  if (!configured_base_link.empty() && configured_base_link != root_link->name) {
+    RCLCPP_WARN(
+      get_node()->get_logger(),
+      "Configured base_link '%s' was not found. Falling back to root link '%s'.",
+      configured_base_link.c_str(),
+      root_link->name.c_str());
+  }
+
+  return root_link->name;
 }
 
 Eigen::Isometry3d BodyForceController::jointPoseInBase(
@@ -135,9 +216,6 @@ controller_interface::CallbackReturn BodyForceController::on_init()
   try {
     auto_declare<std::string>("input_topic", "/body_force/command");
     auto_declare<std::string>("base_link", "base_link");
-    auto_declare<std::vector<std::string>>(
-      "thruster_joints",
-      std::vector<std::string>{"left_thruster_joint", "right_thruster_joint"});
   } catch (const std::exception & e) {
     RCLCPP_ERROR(get_node()->get_logger(), "Exception in on_init: %s", e.what());
     return controller_interface::CallbackReturn::ERROR;
@@ -150,9 +228,23 @@ controller_interface::InterfaceConfiguration
 BodyForceController::command_interface_configuration() const
 {
   std::vector<std::string> names;
-  names.reserve(thruster_joints_.size());
 
-  for (const auto & joint_name : thruster_joints_) {
+  std::vector<std::string> thruster_joints;
+  const auto robot_description_parameter = get_node()->get_parameter("robot_description");
+  if (robot_description_parameter.get_type() == rclcpp::ParameterType::PARAMETER_STRING) {
+    try {
+      thruster_joints = extractThrusterJointsFromRos2Control(
+        robot_description_parameter.as_string());
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR(
+        get_node()->get_logger(),
+        "Failed to extract thruster joints from ros2_control: %s",
+        e.what());
+    }
+  }
+
+  names.reserve(thruster_joints.size());
+  for (const auto & joint_name : thruster_joints) {
     names.push_back(joint_name + "/effort");
   }
 
@@ -173,7 +265,6 @@ controller_interface::CallbackReturn BodyForceController::on_configure(
 {
   input_topic_ = get_node()->get_parameter("input_topic").as_string();
   base_link_ = get_node()->get_parameter("base_link").as_string();
-  thruster_joints_ = get_node()->get_parameter("thruster_joints").as_string_array();
 
   const std::string robot_description =
     get_node()->get_parameter("robot_description").as_string();
@@ -186,6 +277,14 @@ controller_interface::CallbackReturn BodyForceController::on_configure(
   urdf::Model model;
   if (!model.initString(robot_description)) {
     RCLCPP_ERROR(get_node()->get_logger(), "Failed to parse robot_description");
+    return controller_interface::CallbackReturn::ERROR;
+  }
+
+  try {
+    thruster_joints_ = extractThrusterJointsFromRos2Control(robot_description);
+    base_link_ = resolveBaseLink(model, base_link_);
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(get_node()->get_logger(), "Failed to configure thruster model: %s", e.what());
     return controller_interface::CallbackReturn::ERROR;
   }
 
@@ -218,6 +317,8 @@ controller_interface::CallbackReturn BodyForceController::on_configure(
 
   RCLCPP_INFO(get_node()->get_logger(), "Configured BodyForceController");
   RCLCPP_INFO(get_node()->get_logger(), "Input topic: %s", input_topic_.c_str());
+  RCLCPP_INFO(get_node()->get_logger(), "Base link: %s", base_link_.c_str());
+  RCLCPP_INFO(get_node()->get_logger(), "Thruster joints discovered: %zu", thruster_joints_.size());
 
   return controller_interface::CallbackReturn::SUCCESS;
 }

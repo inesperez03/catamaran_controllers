@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <Eigen/Dense>
+#include <tinyxml2.h>
 
 #include "controller_interface/chainable_controller_interface.hpp"
 #include "geometry_msgs/msg/wrench.hpp"
@@ -46,6 +47,13 @@ protected:
 
 private:
   static Eigen::Isometry3d urdfPoseToEigen(const urdf::Pose & pose);
+
+  std::vector<std::string> extractThrusterJointsFromRos2Control(
+    const std::string & robot_description) const;
+
+  std::string resolveBaseLink(
+    const urdf::Model & model,
+    const std::string & configured_base_link) const;
 
   Eigen::Isometry3d jointPoseInBase(
     const urdf::Model & model,
