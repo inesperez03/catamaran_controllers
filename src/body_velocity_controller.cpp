@@ -19,10 +19,13 @@ controller_interface::CallbackReturn BodyVelocityController::on_init()
     auto_declare<double>("kp_u", 0.0);
     auto_declare<double>("ki_u", 0.0);
     auto_declare<double>("kd_u", 0.0);
+    auto_declare<double>("integral_limit_u", 0.0);
+    auto_declare<double>("max_force_x", 0.0);
 
     auto_declare<double>("kp_r", 0.0);
     auto_declare<double>("ki_r", 0.0);
     auto_declare<double>("kd_r", 0.0);
+    auto_declare<double>("integral_limit_r", 0.0);
   } catch (const std::exception & e) {
     RCLCPP_ERROR(get_node()->get_logger(), "Exception in on_init: %s", e.what());
     return controller_interface::CallbackReturn::ERROR;
@@ -68,10 +71,13 @@ controller_interface::CallbackReturn BodyVelocityController::on_configure(
   kp_u_ = get_node()->get_parameter("kp_u").as_double();
   ki_u_ = get_node()->get_parameter("ki_u").as_double();
   kd_u_ = get_node()->get_parameter("kd_u").as_double();
+  integral_limit_u_ = get_node()->get_parameter("integral_limit_u").as_double();
+  max_force_x_ = get_node()->get_parameter("max_force_x").as_double();
 
   kp_r_ = get_node()->get_parameter("kp_r").as_double();
   ki_r_ = get_node()->get_parameter("ki_r").as_double();
   kd_r_ = get_node()->get_parameter("kd_r").as_double();
+  integral_limit_r_ = get_node()->get_parameter("integral_limit_r").as_double();
 
   cmd_vel_sub_ = get_node()->create_subscription<TwistMsg>(
     cmd_vel_topic_,
@@ -103,6 +109,14 @@ controller_interface::CallbackReturn BodyVelocityController::on_configure(
     get_node()->get_logger(),
     "Initial gains: kp_u=%.3f ki_u=%.3f kd_u=%.3f | kp_r=%.3f ki_r=%.3f kd_r=%.3f",
     kp_u_, ki_u_, kd_u_, kp_r_, ki_r_, kd_r_);
+  RCLCPP_INFO(
+    get_node()->get_logger(),
+    "Integral limits: u=%.3f r=%.3f",
+    integral_limit_u_, integral_limit_r_);
+  RCLCPP_INFO(
+    get_node()->get_logger(),
+    "Max force x: %.3f",
+    max_force_x_);
 
   return controller_interface::CallbackReturn::SUCCESS;
 }
@@ -156,6 +170,8 @@ rcl_interfaces::msg::SetParametersResult BodyVelocityController::parametersCallb
       integral_u_ = 0.0;
     } else if (name == "kd_u") {
       kd_u_ = param.as_double();
+    } else if (name == "integral_limit_u") {
+      integral_limit_u_ = param.as_double();
     } else if (name == "kp_r") {
       kp_r_ = param.as_double();
     } else if (name == "ki_r") {
@@ -163,6 +179,8 @@ rcl_interfaces::msg::SetParametersResult BodyVelocityController::parametersCallb
       integral_r_ = 0.0;
     } else if (name == "kd_r") {
       kd_r_ = param.as_double();
+    } else if (name == "integral_limit_r") {
+      integral_limit_r_ = param.as_double();
     }
   }
 
@@ -170,6 +188,10 @@ rcl_interfaces::msg::SetParametersResult BodyVelocityController::parametersCallb
     get_node()->get_logger(),
     "Updated gains: kp_u=%.3f ki_u=%.3f kd_u=%.3f | kp_r=%.3f ki_r=%.3f kd_r=%.3f",
     kp_u_, ki_u_, kd_u_, kp_r_, ki_r_, kd_r_);
+  RCLCPP_INFO(
+    get_node()->get_logger(),
+    "Updated integral limits: u=%.3f r=%.3f",
+    integral_limit_u_, integral_limit_r_);
 
   return result;
 }
@@ -199,6 +221,13 @@ controller_interface::return_type BodyVelocityController::update(
   integral_u_ += error_u * dt;
   integral_r_ += error_r * dt;
 
+  if (integral_limit_u_ > 0.0) {
+    integral_u_ = std::clamp(integral_u_, -integral_limit_u_, integral_limit_u_);
+  }
+  if (integral_limit_r_ > 0.0) {
+    integral_r_ = std::clamp(integral_r_, -integral_limit_r_, integral_limit_r_);
+  }
+
   double derivative_u = 0.0;
   double derivative_r = 0.0;
 
@@ -211,10 +240,21 @@ controller_interface::return_type BodyVelocityController::update(
   prev_error_r_ = error_r;
   first_update_ = false;
 
-  const double force_x =
+  const double force_x_raw =
     kp_u_ * error_u +
     ki_u_ * integral_u_ +
     kd_u_ * derivative_u;
+
+  double force_x = force_x_raw;
+  if (max_force_x_ > 0.0) {
+    force_x = std::clamp(force_x_raw, -max_force_x_, max_force_x_);
+    if (ki_u_ > 0.0 && dt > 0.0 && std::abs(force_x - force_x_raw) > 1.0e-9) {
+      integral_u_ = (force_x - kp_u_ * error_u - kd_u_ * derivative_u) / ki_u_;
+      if (integral_limit_u_ > 0.0) {
+        integral_u_ = std::clamp(integral_u_, -integral_limit_u_, integral_limit_u_);
+      }
+    }
+  }
 
   const double torque_z =
     kp_r_ * error_r +
@@ -242,8 +282,8 @@ controller_interface::return_type BodyVelocityController::update(
     get_node()->get_logger(),
     *get_node()->get_clock(),
     1000,
-    "u_ref=%.3f u=%.3f Fx=%.3f | r_ref=%.3f r=%.3f Mz=%.3f",
-    u_ref, u_meas, force_x,
+    "u_ref=%.3f u=%.3f Fx=%.3f (raw=%.3f) | r_ref=%.3f r=%.3f Mz=%.3f",
+    u_ref, u_meas, force_x, force_x_raw,
     r_ref, r_meas, torque_z);
 
   return controller_interface::return_type::OK;

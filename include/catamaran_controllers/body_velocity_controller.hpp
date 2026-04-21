@@ -57,10 +57,13 @@ private:
   double kp_u_{0.0};
   double ki_u_{0.0};
   double kd_u_{0.0};
+  double integral_limit_u_{0.0};
+  double max_force_x_{0.0};
 
   double kp_r_{0.0};
   double ki_r_{0.0};
   double kd_r_{0.0};
+  double integral_limit_r_{0.0};
 
   double integral_u_{0.0};
   double integral_r_{0.0};
