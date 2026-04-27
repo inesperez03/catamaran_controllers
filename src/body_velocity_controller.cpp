@@ -1,6 +1,8 @@
 #include "catamaran_controllers/body_velocity_controller.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -26,6 +28,14 @@ controller_interface::CallbackReturn BodyVelocityController::on_init()
     auto_declare<double>("ki_r", 0.0);
     auto_declare<double>("kd_r", 0.0);
     auto_declare<double>("integral_limit_r", 0.0);
+
+    reference_interface_names_ = {
+      "linear.x",
+      "angular.z"
+    };
+    reference_interfaces_.resize(
+      reference_interface_names_.size(),
+      std::numeric_limits<double>::quiet_NaN());
   } catch (const std::exception & e) {
     RCLCPP_ERROR(get_node()->get_logger(), "Exception in on_init: %s", e.what());
     return controller_interface::CallbackReturn::ERROR;
@@ -129,6 +139,10 @@ controller_interface::CallbackReturn BodyVelocityController::on_activate(
   prev_error_u_ = 0.0;
   prev_error_r_ = 0.0;
   first_update_ = true;
+  std::fill(
+    reference_interfaces_.begin(),
+    reference_interfaces_.end(),
+    std::numeric_limits<double>::quiet_NaN());
 
   for (auto & command_interface : command_interfaces_) {
     command_interface.set_value(0.0);
@@ -145,12 +159,55 @@ controller_interface::CallbackReturn BodyVelocityController::on_deactivate(
   prev_error_u_ = 0.0;
   prev_error_r_ = 0.0;
   first_update_ = true;
+  std::fill(
+    reference_interfaces_.begin(),
+    reference_interfaces_.end(),
+    std::numeric_limits<double>::quiet_NaN());
 
   for (auto & command_interface : command_interfaces_) {
     command_interface.set_value(0.0);
   }
 
   return controller_interface::CallbackReturn::SUCCESS;
+}
+
+std::vector<hardware_interface::CommandInterface>
+BodyVelocityController::on_export_reference_interfaces()
+{
+  std::vector<hardware_interface::CommandInterface> exported_reference_interfaces;
+  exported_reference_interfaces.reserve(reference_interface_names_.size());
+
+  for (size_t i = 0; i < reference_interface_names_.size(); ++i) {
+    exported_reference_interfaces.emplace_back(
+      hardware_interface::CommandInterface(
+        get_node()->get_name(),
+        reference_interface_names_[i],
+        &reference_interfaces_[i]));
+  }
+
+  return exported_reference_interfaces;
+}
+
+bool BodyVelocityController::on_set_chained_mode(bool chained_mode)
+{
+  if (chained_mode) {
+    RCLCPP_INFO(get_node()->get_logger(), "BodyVelocityController switched to chained mode");
+  } else {
+    RCLCPP_INFO(get_node()->get_logger(), "BodyVelocityController switched to topic mode");
+  }
+  return true;
+}
+
+controller_interface::return_type BodyVelocityController::update_reference_from_subscribers()
+{
+  auto cmd_vel_msg = cmd_vel_buffer_.readFromRT();
+
+  if (!(!cmd_vel_msg || !(*cmd_vel_msg))) {
+    reference_interfaces_[0] = (*cmd_vel_msg)->linear.x;
+    reference_interfaces_[1] = (*cmd_vel_msg)->angular.z;
+  }
+
+  return controller_interface::return_type::OK;
 }
 
 rcl_interfaces::msg::SetParametersResult BodyVelocityController::parametersCallback(
@@ -196,19 +253,18 @@ rcl_interfaces::msg::SetParametersResult BodyVelocityController::parametersCallb
   return result;
 }
 
-controller_interface::return_type BodyVelocityController::update(
+controller_interface::return_type BodyVelocityController::update_and_write_commands(
   const rclcpp::Time &,
   const rclcpp::Duration & period)
 {
-  auto cmd_vel_msg = cmd_vel_buffer_.readFromRT();
   auto navigator_msg = navigator_buffer_.readFromRT();
 
-  if (!cmd_vel_msg || !(*cmd_vel_msg) || !navigator_msg || !(*navigator_msg)) {
+  if (!navigator_msg || !(*navigator_msg)) {
     return controller_interface::return_type::OK;
   }
 
-  const double u_ref = (*cmd_vel_msg)->linear.x;
-  const double r_ref = (*cmd_vel_msg)->angular.z;
+  const double u_ref = std::isnan(reference_interfaces_[0]) ? 0.0 : reference_interfaces_[0];
+  const double r_ref = std::isnan(reference_interfaces_[1]) ? 0.0 : reference_interfaces_[1];
 
   const double u_meas = (*navigator_msg)->body_velocity.linear.x;
   const double r_meas = (*navigator_msg)->body_velocity.angular.z;
@@ -278,14 +334,6 @@ controller_interface::return_type BodyVelocityController::update(
   command_interfaces_[4].set_value(0.0);
   command_interfaces_[5].set_value(torque_z);
 
-  RCLCPP_INFO_THROTTLE(
-    get_node()->get_logger(),
-    *get_node()->get_clock(),
-    1000,
-    "u_ref=%.3f u=%.3f Fx=%.3f (raw=%.3f) | r_ref=%.3f r=%.3f Mz=%.3f",
-    u_ref, u_meas, force_x, force_x_raw,
-    r_ref, r_meas, torque_z);
-
   return controller_interface::return_type::OK;
 }
 
@@ -293,4 +341,4 @@ controller_interface::return_type BodyVelocityController::update(
 
 PLUGINLIB_EXPORT_CLASS(
   catamaran_controllers::BodyVelocityController,
-  controller_interface::ControllerInterface)
+  controller_interface::ChainableControllerInterface)

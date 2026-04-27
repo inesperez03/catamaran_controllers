@@ -21,6 +21,7 @@ find_package(TinyXML2 REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
   src/body_force_controller.cpp
+  src/body_position_controller.cpp
   src/body_velocity_controller.cpp
 )
 
