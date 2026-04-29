@@ -72,6 +72,17 @@ private:
   double max_reverse_speed_{0.0};
   double yaw_command_sign_{1.0};
 
+  double position_release_radius_{0.60};
+
+  double hold_position_deadband_{0.12};
+  double hold_yaw_deadband_{0.12};
+
+  double hold_kp_position_{0.25};
+  double hold_kp_yaw_{0.6};
+
+  double hold_max_linear_speed_{0.05};
+  double hold_max_angular_speed_{0.10};
+  
   const SetPointMsg * last_setpoint_msg_ptr_{nullptr};
   ActiveTarget active_target_{};
   bool has_active_target_{false};
