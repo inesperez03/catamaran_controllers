@@ -20,6 +20,7 @@
   <depend>urdf</depend>
   <depend>sura_msgs</depend>
   <depend>tinyxml2</depend>
+  <depend>visualization_msgs</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

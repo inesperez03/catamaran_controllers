@@ -8,6 +8,7 @@
 #include "realtime_tools/realtime_buffer.hpp"
 #include "sura_msgs/msg/auv_controller_set_point.hpp"
 #include "sura_msgs/msg/navigator.hpp"
+#include "visualization_msgs/msg/marker.hpp"
 
 namespace catamaran_controllers
 {
@@ -36,6 +37,7 @@ public:
 private:
   using NavigatorMsg = sura_msgs::msg::Navigator;
   using SetPointMsg = sura_msgs::msg::AuvControllerSetPoint;
+  using MarkerMsg = visualization_msgs::msg::Marker;
 
   struct ActiveTarget
   {
@@ -49,6 +51,7 @@ private:
 
   rclcpp::Subscription<NavigatorMsg>::SharedPtr navigator_sub_;
   rclcpp::Subscription<SetPointMsg>::SharedPtr setpoint_sub_;
+  rclcpp::Publisher<MarkerMsg>::SharedPtr target_marker_pub_;
 
   realtime_tools::RealtimeBuffer<std::shared_ptr<NavigatorMsg>> navigator_buffer_;
   realtime_tools::RealtimeBuffer<std::shared_ptr<SetPointMsg>> setpoint_buffer_;
@@ -67,6 +70,7 @@ private:
   double heading_error_stop_{0.0};
   double reverse_distance_threshold_{0.0};
   double max_reverse_speed_{0.0};
+  double yaw_command_sign_{1.0};
 
   const SetPointMsg * last_setpoint_msg_ptr_{nullptr};
   ActiveTarget active_target_{};

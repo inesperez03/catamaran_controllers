@@ -53,6 +53,7 @@ controller_interface::CallbackReturn BodyPositionController::on_init()
     auto_declare<double>("heading_error_stop", 1.2);
     auto_declare<double>("reverse_distance_threshold", 0.8);
     auto_declare<double>("max_reverse_speed", 0.10);
+    auto_declare<double>("yaw_command_sign", 1.0);
   } catch (const std::exception & e) {
     RCLCPP_ERROR(get_node()->get_logger(), "Exception in on_init: %s", e.what());
     return controller_interface::CallbackReturn::ERROR;
@@ -101,6 +102,7 @@ controller_interface::CallbackReturn BodyPositionController::on_configure(
   heading_error_stop_ = get_node()->get_parameter("heading_error_stop").as_double();
   reverse_distance_threshold_ = get_node()->get_parameter("reverse_distance_threshold").as_double();
   max_reverse_speed_ = get_node()->get_parameter("max_reverse_speed").as_double();
+  yaw_command_sign_ = get_node()->get_parameter("yaw_command_sign").as_double() < 0.0 ? -1.0 : 1.0;
 
   navigator_sub_ = get_node()->create_subscription<NavigatorMsg>(
     navigator_topic_,
@@ -118,6 +120,9 @@ controller_interface::CallbackReturn BodyPositionController::on_configure(
       setpoint_buffer_.writeFromNonRT(msg);
     });
 
+  target_marker_pub_ =
+    get_node()->create_publisher<MarkerMsg>("/body_position/target_marker", 10);
+
   RCLCPP_INFO(get_node()->get_logger(), "Configured BodyPositionController");
   RCLCPP_INFO(get_node()->get_logger(), "navigator topic: %s", navigator_topic_.c_str());
   RCLCPP_INFO(get_node()->get_logger(), "setpoint topic: %s", setpoint_topic_.c_str());
@@ -125,6 +130,10 @@ controller_interface::CallbackReturn BodyPositionController::on_configure(
     get_node()->get_logger(),
     "body_velocity_controller_name: %s",
     body_velocity_controller_name_.c_str());
+  RCLCPP_INFO(
+    get_node()->get_logger(),
+    "yaw_command_sign: %.1f",
+    yaw_command_sign_);
 
   return controller_interface::CallbackReturn::SUCCESS;
 }
@@ -186,11 +195,50 @@ controller_interface::return_type BodyPositionController::update(
     const SetPointMsg * current_setpoint_ptr = (*setpoint_msg).get();
     if (current_setpoint_ptr != last_setpoint_msg_ptr_) {
       last_setpoint_msg_ptr_ = current_setpoint_ptr;
+
       active_target_.x = (*setpoint_msg)->position.x;
       active_target_.y = (*setpoint_msg)->position.y;
-      active_target_.yaw = (*setpoint_msg)->rpy.z;
+      active_target_.yaw = normalizeAngle((*setpoint_msg)->rpy.z);
+
       has_active_target_ = true;
       holding_current_position_ = false;
+
+      RCLCPP_INFO(
+        get_node()->get_logger(),
+        "New position target: target=(%.2f, %.2f, %.2f)",
+        active_target_.x,
+        active_target_.y,
+        active_target_.yaw);
+
+      if (target_marker_pub_) {
+        MarkerMsg marker;
+        marker.header.frame_id = "map";
+        marker.header.stamp = get_node()->now();
+        marker.ns = "body_position_target";
+        marker.id = 0;
+        marker.type = MarkerMsg::ARROW;
+        marker.action = MarkerMsg::ADD;
+
+        marker.pose.position.x = active_target_.x;
+        marker.pose.position.y = active_target_.y;
+        marker.pose.position.z = 0.25;
+
+        marker.pose.orientation.x = 0.0;
+        marker.pose.orientation.y = 0.0;
+        marker.pose.orientation.z = std::sin(active_target_.yaw * 0.5);
+        marker.pose.orientation.w = std::cos(active_target_.yaw * 0.5);
+
+        marker.scale.x = 1.0;
+        marker.scale.y = 0.12;
+        marker.scale.z = 0.12;
+
+        marker.color.r = 0.0;
+        marker.color.g = 1.0;
+        marker.color.b = 0.0;
+        marker.color.a = 1.0;
+
+        target_marker_pub_->publish(marker);
+      }
     }
   }
 
@@ -218,14 +266,13 @@ controller_interface::return_type BodyPositionController::update(
   double angular_ref = 0.0;
 
   if (distance <= position_hold_radius_) {
-    active_target_.x = x;
-    active_target_.y = y;
     holding_current_position_ = true;
   }
 
   if (distance > position_hold_radius_) {
     const double distance_for_gain =
       slow_down_radius_ > 0.0 ? std::min(distance, slow_down_radius_) : distance;
+
     const bool use_reverse =
       reverse_distance_threshold_ > 0.0 &&
       distance <= reverse_distance_threshold_ &&
@@ -234,17 +281,21 @@ controller_interface::return_type BodyPositionController::update(
     const double motion_heading_error = use_reverse
       ? normalizeAngle(heading_error - std::copysign(kPi, heading_error))
       : heading_error;
+
     const double heading_weight = std::max(0.0, std::cos(motion_heading_error));
     const double speed_limit = use_reverse ? max_reverse_speed_ : max_linear_speed_;
     const double direction = use_reverse ? -1.0 : 1.0;
+
     linear_ref = direction * clampAbs(
       kp_position_ * distance_for_gain * heading_weight,
       speed_limit);
 
-    angular_ref = clampAbs(kp_yaw_ * motion_heading_error, max_angular_speed_);
+    angular_ref = yaw_command_sign_ *
+      clampAbs(kp_yaw_ * motion_heading_error, max_angular_speed_);
   } else {
     if (std::abs(final_yaw_error) > yaw_tolerance_) {
-      angular_ref = clampAbs(kp_yaw_ * final_yaw_error, max_angular_speed_);
+      angular_ref = yaw_command_sign_ *
+        clampAbs(kp_yaw_ * final_yaw_error, max_angular_speed_);
     }
   }
 
@@ -255,10 +306,19 @@ controller_interface::return_type BodyPositionController::update(
     get_node()->get_logger(),
     *get_node()->get_clock(),
     1000,
-    "target=(%.2f, %.2f) pos=(%.2f, %.2f) dist=%.3f radius=%.3f hold=%s yaw_ref=%.2f yaw=%.2f u_ref=%.3f r_ref=%.3f",
-    active_target_.x, active_target_.y, x, y, distance, position_hold_radius_,
+    "target=(%.2f, %.2f) pos=(%.2f, %.2f) dist=%.3f radius=%.3f hold=%s "
+    "yaw_ref=%.2f yaw=%.2f u_ref=%.3f r_ref=%.3f",
+    active_target_.x,
+    active_target_.y,
+    x,
+    y,
+    distance,
+    position_hold_radius_,
     holding_current_position_ ? "true" : "false",
-    yaw_ref, yaw, linear_ref, angular_ref);
+    yaw_ref,
+    yaw,
+    linear_ref,
+    angular_ref);
 
   return controller_interface::return_type::OK;
 }

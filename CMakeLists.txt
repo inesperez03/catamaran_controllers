@@ -18,6 +18,7 @@ find_package(urdf REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(sura_msgs REQUIRED)
 find_package(TinyXML2 REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
   src/body_force_controller.cpp
@@ -46,6 +47,7 @@ ament_target_dependencies(${PROJECT_NAME}
   geometry_msgs
   urdf
   sura_msgs
+  visualization_msgs
 )
 
 pluginlib_export_plugin_description_file(
