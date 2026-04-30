@@ -38,6 +38,14 @@ double BodyPositionController::clampAbs(double value, double limit)
   return std::clamp(value, -limit, limit);
 }
 
+double BodyPositionController::yawFromPose(const geometry_msgs::msg::Pose & pose)
+{
+  const auto & q = pose.orientation;
+  const double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
+  const double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+  return std::atan2(siny_cosp, cosy_cosp);
+}
+
 controller_interface::CallbackReturn BodyPositionController::on_init()
 {
   try {
@@ -150,9 +158,6 @@ controller_interface::CallbackReturn BodyPositionController::on_configure(
       setpoint_buffer_.writeFromNonRT(msg);
     });
 
-  target_marker_pub_ =
-    get_node()->create_publisher<MarkerMsg>("/body_position/target_marker", 10);
-
   RCLCPP_INFO(get_node()->get_logger(), "Configured BodyPositionController");
   RCLCPP_INFO(get_node()->get_logger(), "navigator topic: %s", navigator_topic_.c_str());
   RCLCPP_INFO(get_node()->get_logger(), "setpoint topic: %s", setpoint_topic_.c_str());
@@ -238,9 +243,9 @@ controller_interface::return_type BodyPositionController::update(
   const double yaw = normalizeAngle((*navigator_msg)->rpy.z);
 
   if (setpoint_msg && *setpoint_msg) {
-    const double candidate_x = (*setpoint_msg)->position.x;
-    const double candidate_y = (*setpoint_msg)->position.y;
-    const double candidate_yaw = normalizeAngle((*setpoint_msg)->rpy.z);
+    const double candidate_x = (*setpoint_msg)->pose.position.x;
+    const double candidate_y = (*setpoint_msg)->pose.position.y;
+    const double candidate_yaw = normalizeAngle(yawFromPose((*setpoint_msg)->pose));
 
     const bool target_changed =
       !has_active_target_ ||
@@ -264,35 +269,6 @@ controller_interface::return_type BodyPositionController::update(
         active_target_.y,
         active_target_.yaw);
 
-      if (target_marker_pub_) {
-        MarkerMsg marker;
-        marker.header.frame_id = "map";
-        marker.header.stamp = get_node()->now();
-        marker.ns = "body_position_target";
-        marker.id = 0;
-        marker.type = MarkerMsg::ARROW;
-        marker.action = MarkerMsg::ADD;
-
-        marker.pose.position.x = active_target_.x;
-        marker.pose.position.y = active_target_.y;
-        marker.pose.position.z = 0.25;
-
-        marker.pose.orientation.x = 0.0;
-        marker.pose.orientation.y = 0.0;
-        marker.pose.orientation.z = std::sin(active_target_.yaw * 0.5);
-        marker.pose.orientation.w = std::cos(active_target_.yaw * 0.5);
-
-        marker.scale.x = 1.0;
-        marker.scale.y = 0.12;
-        marker.scale.z = 0.12;
-
-        marker.color.r = 0.0;
-        marker.color.g = 1.0;
-        marker.color.b = 0.0;
-        marker.color.a = 1.0;
-
-        target_marker_pub_->publish(marker);
-      }
     }
   }
 

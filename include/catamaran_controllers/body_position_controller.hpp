@@ -4,11 +4,10 @@
 #include <string>
 
 #include "controller_interface/controller_interface.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "realtime_tools/realtime_buffer.hpp"
-#include "sura_msgs/msg/auv_controller_set_point.hpp"
 #include "sura_msgs/msg/navigator.hpp"
-#include "visualization_msgs/msg/marker.hpp"
 
 namespace catamaran_controllers
 {
@@ -36,8 +35,7 @@ public:
 
 private:
   using NavigatorMsg = sura_msgs::msg::Navigator;
-  using SetPointMsg = sura_msgs::msg::AuvControllerSetPoint;
-  using MarkerMsg = visualization_msgs::msg::Marker;
+  using SetPointMsg = geometry_msgs::msg::PoseStamped;
 
   struct ActiveTarget
   {
@@ -48,10 +46,10 @@ private:
 
   static double normalizeAngle(double angle);
   static double clampAbs(double value, double limit);
+  static double yawFromPose(const geometry_msgs::msg::Pose & pose);
 
   rclcpp::Subscription<NavigatorMsg>::SharedPtr navigator_sub_;
   rclcpp::Subscription<SetPointMsg>::SharedPtr setpoint_sub_;
-  rclcpp::Publisher<MarkerMsg>::SharedPtr target_marker_pub_;
 
   realtime_tools::RealtimeBuffer<std::shared_ptr<NavigatorMsg>> navigator_buffer_;
   realtime_tools::RealtimeBuffer<std::shared_ptr<SetPointMsg>> setpoint_buffer_;
