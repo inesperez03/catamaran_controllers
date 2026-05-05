@@ -14,6 +14,7 @@ namespace
 {
 
 constexpr double kPi = 3.14159265358979323846;
+constexpr int kCircleSegments = 96;
 
 constexpr double kTargetPositionChangeTolerance = 1e-3;  // m
 constexpr double kTargetYawChangeTolerance = 1e-3;       // rad
@@ -44,6 +45,51 @@ double BodyPositionController::yawFromPose(const geometry_msgs::msg::Pose & pose
   const double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
   const double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
   return std::atan2(siny_cosp, cosy_cosp);
+}
+
+void BodyPositionController::publishThresholdMarkers()
+{
+  if (!threshold_marker_pub_ || !has_active_target_) {
+    return;
+  }
+
+  auto make_circle =
+    [this](int id, double radius, float r, float g, float b)
+    {
+      visualization_msgs::msg::Marker marker;
+      marker.header.frame_id = "map";
+      marker.header.stamp = get_node()->now();
+      marker.ns = "body_position_thresholds";
+      marker.id = id;
+      marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+      marker.action = visualization_msgs::msg::Marker::ADD;
+      marker.pose.orientation.w = 1.0;
+      marker.scale.x = 0.04;
+      marker.color.r = r;
+      marker.color.g = g;
+      marker.color.b = b;
+      marker.color.a = 0.9;
+
+      marker.points.reserve(kCircleSegments + 1);
+      for (int i = 0; i <= kCircleSegments; ++i) {
+        const double angle = 2.0 * kPi * static_cast<double>(i) /
+          static_cast<double>(kCircleSegments);
+        geometry_msgs::msg::Point point;
+        point.x = active_target_.x + radius * std::cos(angle);
+        point.y = active_target_.y + radius * std::sin(angle);
+        point.z = 0.05;
+        marker.points.push_back(point);
+      }
+
+      return marker;
+    };
+
+  MarkerArrayMsg markers;
+  markers.markers.push_back(
+    make_circle(0, position_hold_radius_, 0.0F, 1.0F, 0.0F));
+  markers.markers.push_back(
+    make_circle(1, position_release_radius_, 1.0F, 0.55F, 0.0F));
+  threshold_marker_pub_->publish(markers);
 }
 
 controller_interface::CallbackReturn BodyPositionController::on_init()
@@ -158,6 +204,9 @@ controller_interface::CallbackReturn BodyPositionController::on_configure(
       setpoint_buffer_.writeFromNonRT(msg);
     });
 
+  threshold_marker_pub_ =
+    get_node()->create_publisher<MarkerArrayMsg>("/body_position/threshold_markers", 10);
+
   RCLCPP_INFO(get_node()->get_logger(), "Configured BodyPositionController");
   RCLCPP_INFO(get_node()->get_logger(), "navigator topic: %s", navigator_topic_.c_str());
   RCLCPP_INFO(get_node()->get_logger(), "setpoint topic: %s", setpoint_topic_.c_str());
@@ -269,6 +318,7 @@ controller_interface::return_type BodyPositionController::update(
         active_target_.y,
         active_target_.yaw);
 
+      publishThresholdMarkers();
     }
   }
 
@@ -278,6 +328,7 @@ controller_interface::return_type BodyPositionController::update(
     active_target_.yaw = yaw;
     has_active_target_ = true;
     holding_current_position_ = true;
+    publishThresholdMarkers();
   }
 
   const double x_ref = active_target_.x;

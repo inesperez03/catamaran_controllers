@@ -8,6 +8,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "realtime_tools/realtime_buffer.hpp"
 #include "sura_msgs/msg/navigator.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
 
 namespace catamaran_controllers
 {
@@ -36,6 +37,7 @@ public:
 private:
   using NavigatorMsg = sura_msgs::msg::Navigator;
   using SetPointMsg = geometry_msgs::msg::PoseStamped;
+  using MarkerArrayMsg = visualization_msgs::msg::MarkerArray;
 
   struct ActiveTarget
   {
@@ -47,9 +49,11 @@ private:
   static double normalizeAngle(double angle);
   static double clampAbs(double value, double limit);
   static double yawFromPose(const geometry_msgs::msg::Pose & pose);
+  void publishThresholdMarkers();
 
   rclcpp::Subscription<NavigatorMsg>::SharedPtr navigator_sub_;
   rclcpp::Subscription<SetPointMsg>::SharedPtr setpoint_sub_;
+  rclcpp::Publisher<MarkerArrayMsg>::SharedPtr threshold_marker_pub_;
 
   realtime_tools::RealtimeBuffer<std::shared_ptr<NavigatorMsg>> navigator_buffer_;
   realtime_tools::RealtimeBuffer<std::shared_ptr<SetPointMsg>> setpoint_buffer_;
